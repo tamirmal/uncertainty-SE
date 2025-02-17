@@ -57,7 +57,16 @@ class EDNet_uncertainty(nn.Module):
         self.convt1_mean = conv_insn_lrelu(16, out_channel=1, kernel_size_in=1, stride_in=1, padding_in=0, insn=False, lrelu=False)
         self.convt1_logvar = conv_insn_lrelu(16, out_channel=1, kernel_size_in=1, stride_in=1, padding_in=0, insn=False, lrelu=False)
 
-        
+    # Tamir - some notes:
+    #   NN (at least here) - uses real numbers, so this network output magnitude
+    #    and then we multiply by noisy_complex to get complex, but what is noisy_complex ?
+    #    is it X or Phase(X)
+    #
+    #  Lets assume that noisy_complex is X (i.e, complex, STFT of input speech)
+    #   and x is magnitude - torch.abs(noisy_complex)
+    #
+    #  This makes sense because the comments below say "Wiener/Approximated_MAP Filtering" - i.e, the actual filtering ...
+    #
     def forward(self, x, noisy_complex):
         x = torch.unsqueeze(x, 1) # B, 1, T, F
         conv1 = self.conv1(x)
