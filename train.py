@@ -1,7 +1,7 @@
 import os
 import torch
 import torchaudio
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from dataset import SpeechDataset
 from network import EDNet_uncertainty
 from auraloss.time import SISDRLoss
@@ -42,11 +42,14 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     loss = checkpoint['loss']
     return model, optimizer, epoch, loss
 
-def train_model(model, dataloader, optimizer, scheduler, num_epochs=25, checkpoint_path='checkpoint.pth'):
+def train_model(model, train_loader, val_loader, num_epochs=25, checkpoint_path='checkpoint.pth'):
     start_epoch = 0
     best_loss = float('inf')
+    best_model_path = None
     epochs_no_improve = 0
 
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0005)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
     sisdr_loss_func = SISDRLoss()
     Lp_loss_func = LpLoss()
 
@@ -72,7 +75,7 @@ def train_model(model, dataloader, optimizer, scheduler, num_epochs=25, checkpoi
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * noisy.size(0)
-        
+
         epoch_loss = running_loss / len(dataloader.dataset)
         print(f'Epoch {epoch}/{num_epochs - 1}, Loss: {epoch_loss:.4f}')
 
@@ -82,7 +85,8 @@ def train_model(model, dataloader, optimizer, scheduler, num_epochs=25, checkpoi
             best_loss = epoch_loss
             epochs_no_improve = 0
             # Save the best model
-            save_checkpoint(model, optimizer, epoch + 1, epoch_loss, f"checkpoint_best_model_e{epoch}.pth")
+            best_model_path = f"checkpoint_best_model_e{epoch}.pth"
+            save_checkpoint(model, optimizer, epoch + 1, epoch_loss, best_model_path)
         else:
             epochs_no_improve += 1
 
@@ -90,7 +94,7 @@ def train_model(model, dataloader, optimizer, scheduler, num_epochs=25, checkpoi
             print(f'Early stopping! epoch={epoch}, best_loss={best_loss}')
             break
 
-    return model
+    return best_model_path
 
 if __name__ == "__main__":
     ###########################################################################
@@ -100,10 +104,9 @@ if __name__ == "__main__":
     total_files = total_duration_seconds // file_duration_seconds
     train_files = (80 * 3600) // file_duration_seconds
     val_files = total_files - train_files
-
     # Split the dataset
+    dataset = SpeechDataset()
     train_dataset, val_dataset = random_split(dataset, [train_files, val_files])
-
     # Create DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=4)
@@ -111,9 +114,4 @@ if __name__ == "__main__":
     ###########################################################################
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = EDNet_uncertainty().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0005)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
-
-    model = train_model(model, dataloader, criterion, optimizer, scheduler, num_epochs=25)
-    
-    torch.save(model.state_dict(), 'ednet_uncertainty.pth')
+    model_path = train_model(model, train_loader, val_loader, num_epochs=25)
