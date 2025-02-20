@@ -17,15 +17,26 @@ sample_rate = 16000
 window_length_ms = 32  # milliseconds
 window_length_samples = int(sample_rate * window_length_ms / 1000)  # = 512 samples
 n_fft = window_length_samples  # Usually equal to window length
-hop_length = window_length_samples // 4  # 75% overlap -> 128 samples
+hop_length = window_length_samples // 2  # 50% overlap
 
-stft_params = {
+stft_params_cpu = {
+    'n_fft': n_fft,
+    'hop_length': hop_length,
+    'win_length': window_length_samples,
+    'window': torch.hann_window(window_length_samples)
+}
+stft_params_gpu = {
     'n_fft': n_fft,
     'hop_length': hop_length,
     'win_length': window_length_samples,
     'window': torch.hann_window(window_length_samples)
 }
 ###############################################################################
+
+def print_gpu_memory(prefix=''):
+    print(f'####:{prefix}')
+    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
+    print(f"Cached: {torch.cuda.memory_reserved() / 1024**3:.2f}GB")
 
 def save_checkpoint(model, optimizer, epoch, loss, checkpoint_path):
     checkpoint = {
@@ -49,27 +60,26 @@ def evaluate_model(model, dataloader, sisdr_loss_func, Lp_loss_func):
     running_loss = 0.0
     with torch.no_grad():
         for noisy, clean, noise in dataloader:
-            noisy, clean, noise = noisy.to(device), clean.to(device), noise.to(device)
-            # torch.STFT expects (B, T) but we have (B, 1, T). so squeeze the channel dimension
-            noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params)
-            clean_stft = torch.stft(clean.squeeze(1), return_complex=True, **stft_params)
+            noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params_cpu)
+            clean_stft = torch.stft(clean.squeeze(1), return_complex=True, **stft_params_cpu)
             noisy_mag = torch.abs(noisy_stft)
-            # Network input expects: B, 1, T, F => F is last, while torch STFT returns T as last, lets permute
-            # and return it back to the original shape after the network for istft
             x = noisy_mag.permute(0, 2, 1)
             noisy_complex = noisy_stft.permute(0, 2, 1)
+
+            x, noisy_complex = x.to(device), noisy_complex.to(device)
             WF_stft, AMAP_stft, logvar = model(x=x, noisy_complex=noisy_complex)
+ 
             AMAP_stft = AMAP_stft.permute(0, 2, 1)
             WF_stft = WF_stft.permute(0, 2, 1)
             logvar = logvar.permute(0, 2, 1)
-            AMAP_istft = torch.istft(AMAP_stft, **stft_params)
+            AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu)
             loss = sisdr_loss_func(AMAP_istft, clean) + Lp_loss_func(WF_stft, logvar, clean_stft)
             running_loss += loss.item() * noisy.size(0)
     
     epoch_loss = running_loss / len(dataloader.dataset)
     return epoch_loss
 
-def train_model(model, train_loader, val_loader, num_epochs=25, checkpoint_path='checkpoint.pth'):
+def train_model(model, train_loader, val_loader, num_epochs=25, checkpoint_path='checkpoint.pth'):  
     start_epoch = 0
     best_loss = float('inf')
     best_model_path = None
@@ -89,26 +99,31 @@ def train_model(model, train_loader, val_loader, num_epochs=25, checkpoint_path=
         running_loss = 0.0
         with tqdm(total=len(train_loader), desc=f'Epoch {epoch+1}/{num_epochs}', unit='batch') as pbar:
             for noisy, clean, noise in train_loader:
-                noisy, clean, noise = noisy.to(device), clean.to(device), noise.to(device)
-                # torch.STFT expects (B, T) but we have (B, 1, T). so squeeze the channel dimension
-                noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params)
-                clean_stft = torch.stft(clean.squeeze(1), return_complex=True, **stft_params)
+                # 1.torch.STFT expects (B, T) but we have (B, 1, T). so squeeze the channel dimension
+                # 2.do this on cpu so we're not holding on gpu ram
+                noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params_cpu)
+                clean_stft = torch.stft(clean.squeeze(1), return_complex=True, **stft_params_cpu)
                 noisy_mag = torch.abs(noisy_stft)
+                x = noisy_mag.permute(0, 2, 1)
+                noisy_complex = noisy_stft.permute(0, 2, 1)
+
                 optimizer.zero_grad()
                 # Network input expects: B, 1, T, F => F is last, while torch STFT returns T as last, lets permute
                 # and return it back to the original shape after the network for istft
-                x = noisy_mag.permute(0, 2, 1)
-                noisy_complex = noisy_stft.permute(0, 2, 1)
+                x, noisy_complex = x.to(device), noisy_complex.to(device)
                 WF_stft, AMAP_stft, logvar = model(x=x, noisy_complex=noisy_complex)
                 AMAP_stft = AMAP_stft.permute(0, 2, 1)
                 WF_stft = WF_stft.permute(0, 2, 1)
                 logvar = logvar.permute(0, 2, 1)
-                AMAP_istft = torch.istft(AMAP_stft, **stft_params)
+                AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu)
+                clean, clean_stft = clean.to(device), clean_stft.to(device)
                 loss = sisdr_loss_func(AMAP_istft, clean) + Lp_loss_func(WF_stft, logvar, clean_stft)
                 loss.backward()
                 optimizer.step()
                 running_loss += loss.item() * noisy.size(0)
                 pbar.update(1)
+                # clear cache
+                torch.cuda.empty_cache()
 
         epoch_loss = running_loss / len(train_loader.dataset)
         print(f'Epoch {epoch}/{num_epochs - 1}, Training Loss: {epoch_loss:.4f}')
@@ -151,7 +166,7 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=4)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    stft_params['window']=stft_params['window'].to(device)
+    stft_params_gpu['window']=stft_params_gpu['window'].to(device)
     model = EDNet_uncertainty().to(device)
     best_model_path = train_model(model, train_loader, val_loader, num_epochs=25)
 
