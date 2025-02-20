@@ -73,6 +73,7 @@ def evaluate_model(model, dataloader, sisdr_loss_func, Lp_loss_func):
             WF_stft = WF_stft.permute(0, 2, 1)
             logvar = logvar.permute(0, 2, 1)
             AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu)
+            clean, clean_stft = clean.to(device), clean_stft.to(device)
             loss = sisdr_loss_func(AMAP_istft, clean) + Lp_loss_func(WF_stft, logvar, clean_stft)
             running_loss += loss.item() * noisy.size(0)
     
@@ -97,9 +98,10 @@ def train_model(model, train_loader, val_loader, num_epochs=25, checkpoint_path=
     for epoch in range(start_epoch, num_epochs):
         model.train()
         running_loss = 0.0
+        accumulation_steps = 2  # Accumulate over 2 batches of 32 to get effective batch size 64
+        optimizer.zero_grad()  # Zero gradients at the start of each epoch or batch loop
         with tqdm(total=len(train_loader), desc=f'Epoch {epoch+1}/{num_epochs}', unit='batch') as pbar:
-            for noisy, clean, noise in train_loader:
-                # 1.torch.STFT expects (B, T) but we have (B, 1, T). so squeeze the channel dimension
+            for batch_idx, (noisy, clean, noise) in enumerate(train_loader):                # 1.torch.STFT expects (B, T) but we have (B, 1, T). so squeeze the channel dimension
                 # 2.do this on cpu so we're not holding on gpu ram
                 noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params_cpu)
                 clean_stft = torch.stft(clean.squeeze(1), return_complex=True, **stft_params_cpu)
@@ -107,7 +109,6 @@ def train_model(model, train_loader, val_loader, num_epochs=25, checkpoint_path=
                 x = noisy_mag.permute(0, 2, 1)
                 noisy_complex = noisy_stft.permute(0, 2, 1)
 
-                optimizer.zero_grad()
                 # Network input expects: B, 1, T, F => F is last, while torch STFT returns T as last, lets permute
                 # and return it back to the original shape after the network for istft
                 x, noisy_complex = x.to(device), noisy_complex.to(device)
@@ -118,9 +119,12 @@ def train_model(model, train_loader, val_loader, num_epochs=25, checkpoint_path=
                 AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu)
                 clean, clean_stft = clean.to(device), clean_stft.to(device)
                 loss = sisdr_loss_func(AMAP_istft, clean) + Lp_loss_func(WF_stft, logvar, clean_stft)
-                loss.backward()
-                optimizer.step()
                 running_loss += loss.item() * noisy.size(0)
+                (loss / accumulation_steps).backward()  # Scale loss and accumulate gradients
+                # Perform optimizer step every accumulation_steps or at the last batch
+                if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
+                    optimizer.step()
+                    optimizer.zero_grad()  # Clear gradients after step
                 pbar.update(1)
                 # clear cache
                 torch.cuda.empty_cache()
@@ -162,8 +166,8 @@ if __name__ == "__main__":
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     stft_params_gpu['window']=stft_params_gpu['window'].to(device)
