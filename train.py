@@ -50,13 +50,20 @@ def evaluate_model(model, dataloader, sisdr_loss_func, Lp_loss_func):
     with torch.no_grad():
         for noisy, clean, noise in dataloader:
             noisy, clean, noise = noisy.to(device), clean.to(device), noise.to(device)
-            noisy_stft = torch.stft(noisy, **stft_params)
+            # torch.STFT expects (B, T) but we have (B, 1, T). so squeeze the channel dimension
+            noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params)
+            clean_stft = torch.stft(clean.squeeze(1), return_complex=True, **stft_params)
             noisy_mag = torch.abs(noisy_stft)
-            WF_stft, AMAP_stft, logvar = model(x=noisy_mag, noisy_complex=noisy_stft)
-
+            # Network input expects: B, 1, T, F => F is last, while torch STFT returns T as last, lets permute
+            # and return it back to the original shape after the network for istft
+            x = noisy_mag.permute(0, 2, 1)
+            noisy_complex = noisy_stft.permute(0, 2, 1)
+            WF_stft, AMAP_stft, logvar = model(x=x, noisy_complex=noisy_complex)
+            AMAP_stft = AMAP_stft.permute(0, 2, 1)
+            WF_stft = WF_stft.permute(0, 2, 1)
+            logvar = logvar.permute(0, 2, 1)
             AMAP_istft = torch.istft(AMAP_stft, **stft_params)
-            clean_istft = torch.istft(clean, **stft_params)
-            loss = sisdr_loss_func(AMAP_istft, clean) + Lp_loss_func(WF_stft, logvar, clean_istft)
+            loss = sisdr_loss_func(AMAP_istft, clean) + Lp_loss_func(WF_stft, logvar, clean_stft)
             running_loss += loss.item() * noisy.size(0)
     
     epoch_loss = running_loss / len(dataloader.dataset)
@@ -129,18 +136,22 @@ def train_model(model, train_loader, val_loader, num_epochs=25, checkpoint_path=
 if __name__ == "__main__":
     random.seed(7) # for consistency of dataset split
     dataset = SpeechDataset(
-        noisy_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noisy",
-        clean_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/clean",
-        noise_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noise"
+#        noisy_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noisy",
+#        clean_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/clean",
+#        noise_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noise"
+        noisy_dir="/content/datasets_generated/datasets_generated/noisy",
+        clean_dir="/content/datasets_generated/datasets_generated/clean",
+        noise_dir="/content/datasets_generated/datasets_generated/noise"
     )
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=4)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    stft_params['window']=stft_params['window'].to(device)
     model = EDNet_uncertainty().to(device)
     best_model_path = train_model(model, train_loader, val_loader, num_epochs=25)
 
