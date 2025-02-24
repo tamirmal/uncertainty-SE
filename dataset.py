@@ -7,7 +7,7 @@ import os
 # from the name we need to determine the noise,clean sample
 # noise sample: noise_fileid_9.wav
 # clean sample: clean_fileid_2509.wav
-# 
+#
 # Notice the fileid_XXXX at the end ? ...
 
 class SpeechDataset(Dataset):
@@ -30,7 +30,7 @@ class SpeechDataset(Dataset):
         noisy, _ = torchaudio.load(noisy_path)
         clean, _ = torchaudio.load(clean_path)
         noise, _ = torchaudio.load(noise_path)
-        
+
         return noisy, clean, noise
 
 

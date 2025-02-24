@@ -13,9 +13,9 @@ class LpLoss(nn.Module):
         error_term = torch.abs(clean_speech - filtered_output) ** 2
 
         # Step 3: Compute the loss term log(lambda) + (error_term / lambda)
-        loss = torch.log(lambda_) + (error_term / (lambda_ + 1e-8))  # Add epsilon for numerical stability
+        loss = logvar + (error_term / (lambda_ + 1e-8))  # Add epsilon for numerical stability
 
-        # Step 4: Average the loss across all frequency and time bins
+        # Step 4: Average the loss across all frequency and time bins, batches
         loss = loss.mean()
 
         return loss

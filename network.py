@@ -19,7 +19,7 @@ def conv_insn_lrelu(in_channel, out_channel, kernel_size_in, stride_in, padding_
         layers.append(nn.LeakyReLU(0.2))
 
     layers = nn.Sequential(*layers)
-        
+
     return layers
 
 def convt_insn_lrelu(in_channel, out_channel, kernel_size_in, stride_in, padding_in, insn=True, lrelu=True):
@@ -30,11 +30,11 @@ def convt_insn_lrelu(in_channel, out_channel, kernel_size_in, stride_in, padding
         layers.append(nn.InstanceNorm2d(out_channel,affine=False))
     if lrelu:
         layers.append(nn.LeakyReLU(0.2))
-        
+
     layers = nn.Sequential(*layers)
-        
+
     return layers
-    
+
 
 class EDNet_uncertainty(nn.Module):
     def __init__(self, input_channel=1):
@@ -47,7 +47,7 @@ class EDNet_uncertainty(nn.Module):
         self.conv4 = conv_insn_lrelu(64, 128, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
         self.conv5 = conv_insn_lrelu(128, 256, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
         self.conv6 = conv_insn_lrelu(256, 512, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
-        
+
         self.convt6 = convt_insn_lrelu(512, 256, kernel_size_in=(5,5),stride_in=(1,2), padding_in=(2,2))
         self.convt5 = convt_insn_lrelu(256+256, 128, kernel_size_in=(5,5),stride_in=(1,2), padding_in=(2,2))
         self.convt4 = convt_insn_lrelu(128+128, 64, kernel_size_in=(5,5),stride_in=(1,2), padding_in=(2,2))
@@ -78,24 +78,24 @@ class EDNet_uncertainty(nn.Module):
 
         convt6 = self.convt6(conv6)
         y = torch.cat((convt6, conv5), 1)
-        
+
         convt5 = self.convt5(y)
         y = torch.cat((convt5, conv4), 1)
-        
+
         convt4 = self.convt4(y)
         y = torch.cat((convt4, conv3), 1)
-        
+
         convt3 = self.convt3(y)
         y = torch.cat((convt3, conv2), 1)
-        
+
         convt2 = self.convt2(y)
         y = torch.cat((convt2, conv1), 1) # B, C, T, F
-        
-        convt1 = self.convt1(y) 
-        
+
+        convt1 = self.convt1(y)
+
         mean = torch.sigmoid(self.convt1_mean(convt1)).squeeze() # B x 1 x T x F -> (B) x T x F
-        logvar = self.convt1_logvar(convt1).squeeze() # B x 1 x T x F  -> (B) x T x F 
-        
+        logvar = self.convt1_logvar(convt1).squeeze() # B x 1 x T x F  -> (B) x T x F
+
         # Wiener filtering
         WF_stft = mean * noisy_complex
 
@@ -106,15 +106,14 @@ class EDNet_uncertainty(nn.Module):
 
         return WF_stft, AMAP_stft, logvar
 
-  
+
 if __name__ == "__main__":
-    
-    input = torch.randn(16,150,257, dtype=torch.float).cuda()  
+
+    input = torch.randn(16,150,257, dtype=torch.float).cuda()
     noisy = torch.randn(16,150,257, dtype=torch.cfloat).cuda()
-    model = EDNet_uncertainty().cuda()  
+    model = EDNet_uncertainty().cuda()
     output = model(input, noisy)
-    
+
     print(output[0].shape)
     print(output[1].shape)
     print(output[2].shape)
-    
