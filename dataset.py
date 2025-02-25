@@ -36,6 +36,9 @@ class SpeechDataset(Dataset):
 
 # Test the dataset
 if __name__ == "__main__":
+    from auraloss.time import SISDRLoss
+    from LpLoss import LpLoss
+
     dataset = SpeechDataset(
         noisy_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noisy",
         clean_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/clean",
@@ -59,3 +62,38 @@ if __name__ == "__main__":
     # Print the number of files in each set
     print(f'Training set: {len(train_dataset)} files')
     print(f'Validation set: {len(val_dataset)} files')
+
+    _sisdr_loss = SISDRLoss()
+    _lp_loss = LpLoss()
+
+    sample_rate = 16000
+    window_length_ms = 32  # milliseconds
+    window_length_samples = int(sample_rate * window_length_ms / 1000)  # = 512 samples
+    n_fft = window_length_samples  # Usually equal to window length
+    hop_length = window_length_samples // 2  # 50% overlap
+    stft_params_cpu = {
+        'n_fft': n_fft,
+        'hop_length': hop_length,
+        'win_length': window_length_samples,
+        'window': torch.hann_window(window_length_samples)
+    }
+
+    idx = 0
+    for noisy, clean, noise in train_loader:
+        noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params_cpu)
+        clean_stft = torch.stft(clean.squeeze(1), return_complex=True, **stft_params_cpu)
+        noisy_mag = torch.abs(noisy_stft)
+        x = noisy_mag.permute(0, 2, 1)
+        noisy_complex = noisy_stft.permute(0, 2, 1)
+
+        sisdr_loss_clean = _sisdr_loss(clean, clean)
+        Lp_Loss_clean = _lp_loss(clean_stft, torch.ones_like(clean_stft), clean_stft)
+        print(f"sisdr_loss_clean: {sisdr_loss_clean} Lp_Loss_clean: {Lp_Loss_clean}")
+
+        sisdr_loss_noisy = _sisdr_loss(noisy, clean)
+        Lp_Loss_noisy = _lp_loss(noisy_stft, torch.ones_like(noisy_stft), clean_stft)
+        print(f"sisdr_loss_noisy: {sisdr_loss_noisy} Lp_Loss_noisy: {Lp_Loss_noisy}")
+
+        idx +=1
+        if idx >= 4:
+            break

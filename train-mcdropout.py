@@ -59,9 +59,10 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     loss = checkpoint['loss']
     return model, optimizer, epoch, loss
 
-def evaluate_model(model, dataloader, hyperparms = default_hyp):
+def evaluate_model(model, dataloader, hyperparms = default_hyp, passes=32):
     beta = hyperparms['beta']
     model.eval()
+    model.enable_dropout(True)
     running_loss = 0.0
     loss_func = nn.MSELoss()
     with torch.no_grad():

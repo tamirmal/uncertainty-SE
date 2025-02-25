@@ -1,11 +1,13 @@
 import os
+import sys
 import torch
 import torchaudio
 from torch.utils.data import DataLoader, random_split
 from dataset import SpeechDataset
-from network import EDNet_uncertainty
+from network import EDNet_uncertainty, EDNet_uncertainty_baseline_wf
 from auraloss.time import SISDRLoss
 from LpLoss import LpLoss
+from MSELossSpectogram import MSELossSpectrogram
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
@@ -59,12 +61,18 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     loss = checkpoint['loss']
     return model, optimizer, epoch, loss
 
-def evaluate_model(model, dataloader, sisdr_loss_func, Lp_loss_func, hyperparms = default_hyp):
+def evaluate_model(model, dataloader, hyperparms = default_hyp):
     beta = hyperparms['beta']
     model.eval()
     running_loss = 0.0
     running_sisdr_loss = 0.0
     running_lp_loss = 0.0
+    model_type = model.get_type()
+
+    sisdr_loss_func = SISDRLoss()
+    Lp_loss_func = LpLoss()
+    mse_loss = MSELossSpectrogram()
+
     with torch.no_grad():
         for noisy, clean, noise in dataloader:
             noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params_cpu)
@@ -76,19 +84,36 @@ def evaluate_model(model, dataloader, sisdr_loss_func, Lp_loss_func, hyperparms 
             x, noisy_complex = x.to(device), noisy_complex.to(device)
             WF_stft, AMAP_stft, logvar = model(x=x, noisy_complex=noisy_complex)
 
-            AMAP_stft = AMAP_stft.permute(0, 2, 1)
-            WF_stft = WF_stft.permute(0, 2, 1)
-            logvar = logvar.permute(0, 2, 1)
-            AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu)
+            if AMAP_stft is not None:
+                AMAP_stft = AMAP_stft.permute(0, 2, 1)
+                AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu)
+
+            if logvar is not None:
+                logvar = logvar.permute(0, 2, 1)
+
+            if WF_stft is not None:
+                WF_stft = WF_stft.permute(0, 2, 1)
+
             clean, clean_stft = clean.to(device), clean_stft.to(device)
 
-            sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
-            Lp_Loss = Lp_loss_func(WF_stft, logvar, clean_stft)
-            loss = beta*Lp_Loss + (1.0-beta)*sisdr_loss
-            # loss is avg over batch, so multiply by batch size to get total loss
-            running_loss += loss.item() * noisy.size(0)
-            running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
-            running_lp_loss += Lp_Loss.item() * noisy.size(0)
+            if model_type == 'wf_amap':
+                sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
+                Lp_Loss = Lp_loss_func(WF_stft, logvar, clean_stft)
+                loss = beta*Lp_Loss + (1.0-beta)*sisdr_loss
+                # loss is avg over batch, so multiply by batch size to get total loss
+                running_loss += loss.item() * noisy.size(0)
+                running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
+                running_lp_loss += Lp_Loss.item() * noisy.size(0)
+            elif model_type == 'amap':
+                sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
+                loss = sisdr_loss
+                # loss is avg over batch, so multiply by batch size to get total loss
+                running_loss += loss.item() * noisy.size(0)
+                running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
+            elif model_type == 'baseline_wf':
+                loss = mse_loss(WF_stft, clean_stft)
+                # loss is avg over batch, so multiply by batch size to get total loss
+                running_loss += loss.item() * noisy.size(0)
 
     # avg loss over num of samples
     epoch_loss = running_loss / len(dataloader.dataset)
@@ -102,12 +127,14 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
     best_model_path = None
     epochs_no_improve = 0
     beta = hyperparms['beta']
+    model_type = model.get_type()
 
     #optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0005)
     optimizer = optim.Adam(model.parameters(), lr=0.005, weight_decay=0.0005)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
     sisdr_loss_func = SISDRLoss()
     Lp_loss_func = LpLoss()
+    mse_loss = MSELossSpectrogram()
 
     if os.path.exists(checkpoint_path):
         model, optimizer, start_epoch, _ = load_checkpoint(checkpoint_path, model, optimizer)
@@ -120,7 +147,7 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
         running_lp_loss = 0.0
         accumulation_steps = 2  # Accumulate over 2 batches of 32 to get effective batch size 64
         optimizer.zero_grad()  # Zero gradients at the start of each epoch or batch loop
-        with tqdm(total=len(train_loader), desc=f'Epoch {epoch+1}/{num_epochs}', unit='batch') as pbar:
+        with tqdm(total=len(train_loader), desc=f'Epoch {epoch}/{num_epochs - 1}', unit='batch') as pbar:
             for batch_idx, (noisy, clean, noise) in enumerate(train_loader):                # 1.torch.STFT expects (B, T) but we have (B, 1, T). so squeeze the channel dimension
                 # 2.do this on cpu so we're not holding on gpu ram
                 noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params_cpu)
@@ -134,19 +161,37 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
                 x, noisy_complex = x.to(device), noisy_complex.to(device)
                 WF_stft, AMAP_stft, logvar = model(x=x, noisy_complex=noisy_complex)
 
-                AMAP_stft = AMAP_stft.permute(0, 2, 1)
-                WF_stft = WF_stft.permute(0, 2, 1)
-                logvar = logvar.permute(0, 2, 1)
-                AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu)
+                if AMAP_stft is not None:
+                    AMAP_stft = AMAP_stft.permute(0, 2, 1)
+                    AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu)
+
+                if logvar is not None:
+                    logvar = logvar.permute(0, 2, 1)
+
+                if WF_stft is not None:
+                    WF_stft = WF_stft.permute(0, 2, 1)
+
                 clean, clean_stft = clean.to(device), clean_stft.to(device)
 
-                sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
-                Lp_Loss = Lp_loss_func(WF_stft, logvar, clean_stft)
-                loss = beta*Lp_Loss + (1.0-beta)*sisdr_loss
+                if model_type == 'wf_amap':
+                    sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
+                    Lp_Loss = Lp_loss_func(WF_stft, logvar, clean_stft)
+                    loss = beta*Lp_Loss + (1.0-beta)*sisdr_loss
+                    # loss is avg over batch, so multiply by batch size to get total loss
+                    running_loss += loss.item() * noisy.size(0)
+                    running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
+                    running_lp_loss += Lp_Loss.item() * noisy.size(0)
+                elif model_type == 'amap':
+                    sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
+                    loss = sisdr_loss
+                    # loss is avg over batch, so multiply by batch size to get total loss
+                    running_loss += loss.item() * noisy.size(0)
+                    running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
+                elif model_type == 'baseline_wf':
+                    loss = mse_loss(WF_stft, clean_stft)
+                    # loss is avg over batch, so multiply by batch size to get total loss
+                    running_loss += loss.item() * noisy.size(0)
 
-                running_loss += loss.item() * noisy.size(0)
-                running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
-                running_lp_loss += Lp_Loss.item() * noisy.size(0)
                 (loss / accumulation_steps).backward()  # Scale loss and accumulate gradients
                 # Perform optimizer step every accumulation_steps or at the last batch
                 if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
@@ -162,7 +207,7 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
         print(f'Epoch {epoch}/{num_epochs - 1}, Training Loss: {epoch_loss:.4f}, SISDR Loss: {sisdr_loss:.4f}, Lp Loss: {Lp_Loss:.4f}')
 
         # Evaluate on validation set
-        val_loss, val_lp_loss, val_sisdr_loss = evaluate_model(model, val_loader, sisdr_loss_func, Lp_loss_func)
+        val_loss, val_lp_loss, val_sisdr_loss = evaluate_model(model, val_loader)
         print(f'Epoch {epoch}/{num_epochs - 1}, Validation Loss: {val_loss:.4f}, SISDR Loss: {val_sisdr_loss:.4f}, Lp Loss: {val_lp_loss:.4f}')
 
         # Check if validation loss improved
@@ -170,7 +215,7 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
         if val_loss < best_loss:
             best_loss = val_loss
             epochs_no_improve = 0
-            best_model_path = f"/gdrive/MyDrive/Colab Notebooks/speech/v2/best_model_epoch_{epoch}.pth"
+            best_model_path = f"/gdrive/MyDrive/Colab Notebooks/speech/{model_type}/best_model_epoch_{epoch}.pth"
             save_checkpoint(model, optimizer, epoch + 1, val_loss, best_model_path)
         else:
             epochs_no_improve += 1
@@ -182,6 +227,10 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
     return best_model_path
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 2:
+        model_type = sys.argv[1]
+        print(f'Training model: {model_type}')
+
     random.seed(7) # for consistency of dataset split
     dataset = SpeechDataset(
 #        noisy_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noisy",
@@ -200,7 +249,11 @@ if __name__ == "__main__":
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     stft_params_gpu['window']=stft_params_gpu['window'].to(device)
-    model = EDNet_uncertainty().to(device)
+
+    if model_type == 'baseline_wf':
+        model = EDNet_uncertainty_baseline_wf().to(device)
+    else:
+        model = EDNet_uncertainty().to(device)
     best_model_path = train_model(model, train_loader, val_loader, num_epochs=50, checkpoint_path='/gdrive/MyDrive/Colab Notebooks/speech/checkpoint.pth')
 
     if best_model_path:
