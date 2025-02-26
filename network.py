@@ -252,8 +252,13 @@ class EDNet_uncertainty_epistemic_dropout(nn.Module):
     def get_type(self):
         return 'mc-dropout'
 
-    def __init__(self, input_channel=1):
+    def get_M(self):
+        return self.M
+
+    def __init__(self, input_channel=1, M = 8):
         super(EDNet_uncertainty_epistemic_dropout, self).__init__()
+        self.M = M
+
         # processing input: Batch x Input_channel x Time x Frequency
 
         self.conv1 = conv_insn_lrelu(input_channel, 16, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))

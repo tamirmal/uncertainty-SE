@@ -4,7 +4,7 @@ import torch
 import torchaudio
 from torch.utils.data import DataLoader, random_split
 from dataset import SpeechDataset
-from network import EDNet_uncertainty, EDNet_uncertainty_baseline_wf, EDNet_uncertainty_aleatoric_amap
+from network import EDNet_uncertainty, EDNet_uncertainty_baseline_wf, EDNet_uncertainty_aleatoric_amap, EDNet_uncertainty_epistemic_dropout
 from auraloss.time import SISDRLoss
 from LpLoss import LpLoss
 from MSELossSpectogram import MSELossSpectrogram
@@ -61,6 +61,48 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     loss = checkpoint['loss']
     return model, optimizer, epoch, loss
 
+"""
+def evaluate_model_mc_dropout(model, dataloader, hyperparams=default_hyp, mc_iterations=16):
+    # Set model to evaluation mode but keep dropout active for MC Dropout
+    model.eval()  # Dropout remains active due to explicit enabling below
+    running_loss = 0.0
+
+    with torch.no_grad():
+        for noisy, clean, noise in dataloader:
+            # Compute STFT for noisy and clean signals
+            noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params_cpu)
+            clean_stft = torch.stft(clean.squeeze(1), return_complex=True, **stft_params_cpu)
+            noisy_mag = torch.abs(noisy_stft)
+            x = noisy_mag.permute(0, 2, 1)  # Input magnitude spectrogram
+            noisy_complex = noisy_stft.permute(0, 2, 1)  # Complex noisy STFT
+
+            # Move to device
+            x, noisy_complex, clean_stft = x.to(device), noisy_complex.to(device), clean_stft.to(device)
+
+            # Perform MC Dropout: multiple forward passes with dropout enabled
+            wf_stft_samples = []
+            for _ in range(mc_iterations):
+                # Explicitly enable dropout during inference
+                model.train()  # Temporarily set to train mode to activate dropout
+                wf_stft = model(x=x, noisy_complex=noisy_complex)  # Wiener filter estimate
+                model.eval()  # Switch back to eval mode to avoid affecting batch norm, etc.
+                if wf_stft is not None:
+                    wf_stft = wf_stft.permute(0, 2, 1)  # Adjust dimensions
+                wf_stft_samples.append(wf_stft)
+
+            # Stack and average the Wiener filter samples
+            wf_stft_samples = torch.stack(wf_stft_samples, dim=0)  # Shape: [mc_iterations, batch, F, T]
+            averaged_wf_stft = torch.mean(wf_stft_samples, dim=0)  # Average over MC iterations
+
+            # Compute MSE loss between averaged filter output and clean STFT
+            loss = mse_loss(averaged_wf_stft, clean_stft, reduction='mean')
+            running_loss += loss.item() * noisy.size(0)  # Total loss for batch
+
+    # Average loss over the dataset
+    epoch_loss = running_loss / len(dataloader.dataset)
+    return epoch_loss
+"""
+
 def evaluate_model(model, dataloader, hyperparms = default_hyp):
     beta = hyperparms['beta']
     model.eval()
@@ -82,7 +124,19 @@ def evaluate_model(model, dataloader, hyperparms = default_hyp):
             noisy_complex = noisy_stft.permute(0, 2, 1)
 
             x, noisy_complex = x.to(device), noisy_complex.to(device)
-            WF_stft, AMAP_stft, logvar = model(x=x, noisy_complex=noisy_complex)
+
+            if model_type == 'mc-dropout':
+                model.enable_dropout(True) # in case it was disabled by .eval()
+                wf_stft_samples = []
+                for idx in range(model.get_M()):
+                    WF_stft, AMAP_stft, logvar = model(x=x, noisy_complex=noisy_complex)
+                    wf_stft_samples.append(WF_stft)
+                # Stack and average the Wiener filter samples
+                wf_stft_samples = torch.stack(wf_stft_samples, dim=0)  # Shape: [mc_iterations, batch, F, T]
+                averaged_wf_stft = torch.mean(wf_stft_samples, dim=0)  # Average over MC iterations
+                WF_stft = averaged_wf_stft
+            else:
+                WF_stft, AMAP_stft, logvar = model(x=x, noisy_complex=noisy_complex)
 
             if AMAP_stft is not None:
                 AMAP_stft = AMAP_stft.permute(0, 2, 1)
@@ -110,7 +164,7 @@ def evaluate_model(model, dataloader, hyperparms = default_hyp):
                 # loss is avg over batch, so multiply by batch size to get total loss
                 running_loss += loss.item() * noisy.size(0)
                 running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
-            elif model_type == 'baseline_wf':
+            elif model_type in ['baseline_wf', 'mc-dropout']:
                 loss = mse_loss(WF_stft, clean_stft)
                 # loss is avg over batch, so multiply by batch size to get total loss
                 running_loss += loss.item() * noisy.size(0)
@@ -142,9 +196,12 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
     Lp_loss_func = LpLoss()
     mse_loss = MSELossSpectrogram()
 
-    if os.path.exists(checkpoint_path):
-        model, optimizer, start_epoch, _ = load_checkpoint(checkpoint_path, model, optimizer)
-        print(f'Resuming training from epoch {start_epoch}')
+    if checkpoint_path:
+      if os.path.exists(checkpoint_path):
+          model, optimizer, start_epoch, _ = load_checkpoint(checkpoint_path, model, optimizer)
+          print(f'Resuming training from epoch {start_epoch}')
+      else:
+          assert False, f"Cant find given checkpoint {checkpoint_path}"
 
     for epoch in range(start_epoch, num_epochs):
         model.train()
@@ -193,7 +250,7 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
                     # loss is avg over batch, so multiply by batch size to get total loss
                     running_loss += loss.item() * noisy.size(0)
                     running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
-                elif model_type == 'baseline_wf':
+                elif model_type in ['baseline_wf', 'mc-dropout']:
                     loss = mse_loss(WF_stft, clean_stft)
                     # loss is avg over batch, so multiply by batch size to get total loss
                     running_loss += loss.item() * noisy.size(0)
@@ -227,7 +284,10 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
         if val_loss < best_loss:
             best_loss = val_loss
             epochs_no_improve = 0
-            best_model_path = f"/gdrive/MyDrive/Colab Notebooks/speech/{model_type}/best_model_epoch_{epoch}.pth"
+            if model_type == 'mc-dropout':
+                best_model_path = f"/gdrive/MyDrive/Colab Notebooks/speech/{model_type}/{model.get_M()}/best_model_epoch_{epoch}.pth"
+            else:
+                best_model_path = f"/gdrive/MyDrive/Colab Notebooks/speech/{model_type}/best_model_epoch_{epoch}.pth"
             save_checkpoint(model, optimizer, epoch + 1, val_loss, best_model_path)
         else:
             epochs_no_improve += 1
@@ -268,9 +328,14 @@ if __name__ == "__main__":
         model = EDNet_uncertainty_baseline_wf(model_type='baseline_wf_sisdr').to(device)
     elif model_type == 'amap':
         model = EDNet_uncertainty_aleatoric_amap().to(device)
+    elif model_type == 'mc-dropout':
+        assert len(sys.argv) >= 3, 'MC Dropout requires the number of MC iterations'
+        mc_iterations = int(sys.argv[2])
+        print(f"mc-dropout={mc_iterations}")
+        model = EDNet_uncertainty_epistemic_dropout(M=mc_iterations).to(device)
     else:
         model = EDNet_uncertainty().to(device)
-    best_model_path = train_model(model, train_loader, val_loader, num_epochs=50, checkpoint_path='/gdrive/MyDrive/Colab Notebooks/speech/checkpoint.pth')
+    best_model_path = train_model(model, train_loader, val_loader, num_epochs=100, checkpoint_path='/gdrive/MyDrive/Colab Notebooks/speech/mc-dropout/8/best_model_epoch_48.pth')
 
     if best_model_path:
         print(f'Best model saved at: {best_model_path}')
