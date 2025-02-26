@@ -114,7 +114,7 @@ class EDNet_uncertainty_aleatoric_amap(nn.Module):
         return 'amap'
 
     def __init__(self, input_channel=1):
-        super(EDNet_uncertainty, self).__init__()
+        super(EDNet_uncertainty_aleatoric_amap, self).__init__()
         # processing input: Batch x Input_channel x Time x Frequency
 
         self.conv1 = conv_insn_lrelu(input_channel, 16, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
@@ -182,10 +182,12 @@ class EDNet_uncertainty_aleatoric_amap(nn.Module):
 
 class EDNet_uncertainty_baseline_wf(nn.Module):
     def get_type(self):
-        return 'baseline_wf'
+        return self.model_type
 
-    def __init__(self, input_channel=1):
+    def __init__(self, input_channel=1, model_type='baseline_wf'):
         super(EDNet_uncertainty_baseline_wf, self).__init__()
+
+        self.model_type = model_type
         # processing input: Batch x Input_channel x Time x Frequency
 
         self.conv1 = conv_insn_lrelu(input_channel, 16, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
@@ -247,6 +249,9 @@ class EDNet_uncertainty_baseline_wf(nn.Module):
 
 # this network should use the loss in (8)
 class EDNet_uncertainty_epistemic_dropout(nn.Module):
+    def get_type(self):
+        return 'mc-dropout'
+
     def __init__(self, input_channel=1):
         super(EDNet_uncertainty_epistemic_dropout, self).__init__()
         # processing input: Batch x Input_channel x Time x Frequency
@@ -285,14 +290,17 @@ class EDNet_uncertainty_epistemic_dropout(nn.Module):
         conv2 = self.conv2(conv1)
         conv3 = self.conv3(conv2)
         conv4 = self.conv4(conv3)
-        conv5 = self.conv5(conv4)
-        conv6 = self.conv6(conv5)
+        conv4d = self.dropout4(conv4)
+        conv5 = self.conv5(conv4d)
+        conv5d = self.dropout5(conv5)
+        conv6 = self.conv6(conv5d)
+        conv6d = self.dropout6(conv6)
 
-        convt6 = self.convt6(conv6)
-        y = torch.cat((convt6, conv5), 1)
+        convt6 = self.convt6(conv6d)
+        y = torch.cat((convt6, conv5d), 1)
 
         convt5 = self.convt5(y)
-        y = torch.cat((convt5, conv4), 1)
+        y = torch.cat((convt5, conv4d), 1)
 
         convt4 = self.convt4(y)
         y = torch.cat((convt4, conv3), 1)

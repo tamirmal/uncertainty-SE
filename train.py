@@ -4,7 +4,7 @@ import torch
 import torchaudio
 from torch.utils.data import DataLoader, random_split
 from dataset import SpeechDataset
-from network import EDNet_uncertainty, EDNet_uncertainty_baseline_wf
+from network import EDNet_uncertainty, EDNet_uncertainty_baseline_wf, EDNet_uncertainty_aleatoric_amap
 from auraloss.time import SISDRLoss
 from LpLoss import LpLoss
 from MSELossSpectogram import MSELossSpectrogram
@@ -86,7 +86,7 @@ def evaluate_model(model, dataloader, hyperparms = default_hyp):
 
             if AMAP_stft is not None:
                 AMAP_stft = AMAP_stft.permute(0, 2, 1)
-                AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu)
+                AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu, return_complex=False)
 
             if logvar is not None:
                 logvar = logvar.permute(0, 2, 1)
@@ -113,6 +113,12 @@ def evaluate_model(model, dataloader, hyperparms = default_hyp):
             elif model_type == 'baseline_wf':
                 loss = mse_loss(WF_stft, clean_stft)
                 # loss is avg over batch, so multiply by batch size to get total loss
+                running_loss += loss.item() * noisy.size(0)
+            elif model_type == 'baseline_wf_sisdr':
+                WF_istft = torch.istft(WF_stft, **stft_params_gpu, return_complex=False)
+                sisdr_loss = sisdr_loss_func(WF_istft, clean)
+                loss = sisdr_loss
+                running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
                 running_loss += loss.item() * noisy.size(0)
 
     # avg loss over num of samples
@@ -163,7 +169,7 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
 
                 if AMAP_stft is not None:
                     AMAP_stft = AMAP_stft.permute(0, 2, 1)
-                    AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu)
+                    AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu, return_complex=False)
 
                 if logvar is not None:
                     logvar = logvar.permute(0, 2, 1)
@@ -190,6 +196,12 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
                 elif model_type == 'baseline_wf':
                     loss = mse_loss(WF_stft, clean_stft)
                     # loss is avg over batch, so multiply by batch size to get total loss
+                    running_loss += loss.item() * noisy.size(0)
+                elif model_type == 'baseline_wf_sisdr':
+                    WF_istft = torch.istft(WF_stft, **stft_params_gpu, return_complex=False)
+                    sisdr_loss = sisdr_loss_func(WF_istft, clean)
+                    loss = sisdr_loss
+                    running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
                     running_loss += loss.item() * noisy.size(0)
 
                 (loss / accumulation_steps).backward()  # Scale loss and accumulate gradients
@@ -252,6 +264,10 @@ if __name__ == "__main__":
 
     if model_type == 'baseline_wf':
         model = EDNet_uncertainty_baseline_wf().to(device)
+    elif model_type == 'baseline_wf_sisdr':
+        model = EDNet_uncertainty_baseline_wf(model_type='baseline_wf_sisdr').to(device)
+    elif model_type == 'amap':
+        model = EDNet_uncertainty_aleatoric_amap().to(device)
     else:
         model = EDNet_uncertainty().to(device)
     best_model_path = train_model(model, train_loader, val_loader, num_epochs=50, checkpoint_path='/gdrive/MyDrive/Colab Notebooks/speech/checkpoint.pth')
