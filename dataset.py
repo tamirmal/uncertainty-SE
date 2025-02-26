@@ -36,7 +36,8 @@ class SpeechDataset(Dataset):
 
 # Test the dataset
 if __name__ == "__main__":
-    from auraloss.time import SISDRLoss
+    #from auraloss.time import SISDRLoss
+    from SISDRLoss import SISDRLoss
     from LpLoss import LpLoss
 
     dataset = SpeechDataset(
@@ -77,6 +78,8 @@ if __name__ == "__main__":
         'win_length': window_length_samples,
         'window': torch.hann_window(window_length_samples)
     }
+
+    print(f'stft_params: {stft_params_cpu}')
 
     idx = 0
     for noisy, clean, noise in train_loader:
