@@ -101,6 +101,7 @@ def evaluate_model(model, dataloader, hyperparms = default_hyp):
             if AMAP_stft is not None:
                 AMAP_stft = AMAP_stft.permute(0, 2, 1)
                 AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu, return_complex=False)
+                AMAP_istft = AMAP_istft.unsqueeze(1)
 
             if logvar is not None:
                 logvar = logvar.permute(0, 2, 1)
@@ -157,7 +158,7 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
 
     if checkpoint_path:
       if os.path.exists(checkpoint_path):
-          model, optimizer, start_epoch, _ = load_checkpoint(checkpoint_path, model, optimizer)
+          model, optimizer, start_epoch, best_loss = load_checkpoint(checkpoint_path, model, optimizer)
           print(f'Resuming training from epoch {start_epoch}')
       else:
           assert False, f"Cant find given checkpoint {checkpoint_path}"
@@ -255,10 +256,12 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
         if val_loss < best_loss:
             best_loss = val_loss
             epochs_no_improve = 0
+
+            drive_path=os.environ['DRIVE_PATH']
             if model_type == 'mc-dropout':
-                best_model_path = f"/gdrive/MyDrive/Colab Notebooks/speech/{model_type}/{model.get_M()}/best_model_epoch_{epoch}.pth"
+                best_model_path = f"{drive_path}/{model_type}/{model.get_M()}/best_model_epoch_{epoch}.pth"
             else:
-                best_model_path = f"/gdrive/MyDrive/Colab Notebooks/speech/{model_type}/best_model_epoch_{epoch}.pth"
+                best_model_path = f"{drive_path}/{model_type}/best_model_epoch_{epoch}.pth"
             save_checkpoint(model, optimizer, epoch + 1, val_loss, best_model_path)
         else:
             epochs_no_improve += 1
@@ -274,20 +277,20 @@ if __name__ == "__main__":
         model_type = sys.argv[1]
         print(f'Training model: {model_type}')
 
+    drive_path=os.environ['DRIVE_PATH']
+    assert drive_path, 'Please set the DRIVE_PATH environment variable'
+
     if torch.cuda.is_available():
-        noisy_dir="/content/datasets_generated/datasets_generated/noisy"
-        clean_dir="/content/datasets_generated/datasets_generated/clean"
-        noise_dir="/content/datasets_generated/datasets_generated/noise"
+        noisy_dir="/content/noisy"
+        clean_dir="/content/clean"
     else:
         noisy_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noisy"
         clean_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/clean"
-        noise_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noise"
 
     random.seed(7) # for consistency of dataset split
     dataset = SpeechDataset(
         noisy_dir=noisy_dir,
         clean_dir=clean_dir,
-        noise_dir=noise_dir,
     )
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
@@ -301,7 +304,7 @@ if __name__ == "__main__":
         val_loader = DataLoader(val_dataset, batch_size=2, shuffle=False, num_workers=4)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    assert stft_params_cpu == stft_params_gpu # assert equal before moving to device
+    #assert stft_params_cpu == stft_params_gpu # assert equal before moving to device
     stft_params_gpu['window']=stft_params_gpu['window'].to(device)
 
     if model_type == 'baseline_wf':

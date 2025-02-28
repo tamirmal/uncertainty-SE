@@ -11,11 +11,11 @@ import os
 # Notice the fileid_XXXX at the end ? ...
 
 class SpeechDataset(Dataset):
-    def __init__(self, noisy_dir='datasets_generated/noisy', clean_dir='datasets_generated/clean', noise_dir='datasets_generated/noise'):
+    def __init__(self, noisy_dir='datasets_generated/noisy', clean_dir='datasets_generated/clean'):
         self.noisy_files = sorted(os.listdir(noisy_dir))
         self.noisy_dir = noisy_dir
         self.clean_dir = clean_dir
-        self.noise_dir = noise_dir
+        #self.noise_dir = noise_dir
 
     def __len__(self):
         return len(self.noisy_files)
@@ -25,7 +25,7 @@ class SpeechDataset(Dataset):
         fileid = noisy_path.split('_')[-1].split('.')[0]
 
         clean_path = os.path.join(self.clean_dir, f"clean_fileid_{fileid}.wav")
-        noise_path = os.path.join(self.noise_dir, f"noise_fileid_{fileid}.wav")
+        #noise_path = os.path.join(self.noise_dir, f"noise_fileid_{fileid}.wav")
 
         noisy, _ = torchaudio.load(noisy_path)
         clean, _ = torchaudio.load(clean_path)
@@ -45,7 +45,7 @@ if __name__ == "__main__":
     dataset = SpeechDataset(
         noisy_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noisy",
         clean_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/clean",
-        noise_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noise"
+        #noise_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noise"
         )
 
     # Calculate the number of files needed for 80 hours and 20 hours
