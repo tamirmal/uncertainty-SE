@@ -29,15 +29,17 @@ class SpeechDataset(Dataset):
 
         noisy, _ = torchaudio.load(noisy_path)
         clean, _ = torchaudio.load(clean_path)
-        noise, _ = torchaudio.load(noise_path)
-
-        return noisy, clean, noise
+        #noise, _ = torchaudio.load(noise_path)
+        #return noisy, clean, noise
+        return noisy, clean, noisy_path
 
 
 # Test the dataset
 if __name__ == "__main__":
-    #from auraloss.time import SISDRLoss
-    from SISDRLoss import SISDRLoss
+    import random
+    random.seed(7)
+    from auraloss.time import SISDRLoss  as SISDRLossAuraloss
+    from SISDRLoss import SISDRLoss as SISDRLossSelf
     from LpLoss import LpLoss
 
     dataset = SpeechDataset(
@@ -57,14 +59,15 @@ if __name__ == "__main__":
     train_dataset, val_dataset = random_split(dataset, [train_files, val_files])
 
     # Create DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=4)
 
     # Print the number of files in each set
     print(f'Training set: {len(train_dataset)} files')
     print(f'Validation set: {len(val_dataset)} files')
 
-    _sisdr_loss = SISDRLoss()
+    _sisdr_loss_self = SISDRLossSelf()
+    _sisdr_loss_auraloss = SISDRLossAuraloss()
     _lp_loss = LpLoss()
 
     sample_rate = 16000
@@ -82,21 +85,23 @@ if __name__ == "__main__":
     print(f'stft_params: {stft_params_cpu}')
 
     idx = 0
-    for noisy, clean, noise in train_loader:
+    for noisy, clean, noisy_path in train_loader:
         noisy_stft = torch.stft(noisy.squeeze(1), return_complex=True, **stft_params_cpu)
         clean_stft = torch.stft(clean.squeeze(1), return_complex=True, **stft_params_cpu)
         noisy_mag = torch.abs(noisy_stft)
         x = noisy_mag.permute(0, 2, 1)
         noisy_complex = noisy_stft.permute(0, 2, 1)
 
-        sisdr_loss_clean = _sisdr_loss(clean, clean)
-        Lp_Loss_clean = _lp_loss(clean_stft, torch.ones_like(clean_stft), clean_stft)
-        print(f"sisdr_loss_clean: {sisdr_loss_clean} Lp_Loss_clean: {Lp_Loss_clean}")
+        #sisdr_loss_clean = _sisdr_loss(clean, clean)
+        #Lp_Loss_clean = _lp_loss(clean_stft, torch.ones_like(clean_stft), clean_stft)
+        #print(f"sisdr_loss_clean: {sisdr_loss_clean} Lp_Loss_clean: {Lp_Loss_clean}")
 
-        sisdr_loss_noisy = _sisdr_loss(noisy, clean)
+        sisdr_loss_self_noisy = _sisdr_loss_self(noisy, clean)
+        sisdr_loss_auraloss_noisy = _sisdr_loss_auraloss(noisy, clean)
         Lp_Loss_noisy = _lp_loss(noisy_stft, torch.ones_like(noisy_stft), clean_stft)
-        print(f"sisdr_loss_noisy: {sisdr_loss_noisy} Lp_Loss_noisy: {Lp_Loss_noisy}")
+        print(f"noisy_path: {noisy_path}")
+        print(f"sisdr_loss_noisy: {sisdr_loss_self_noisy} sisdr_loss_auraloss_noisy: {sisdr_loss_auraloss_noisy} Lp_Loss_noisy: {Lp_Loss_noisy}")
 
         idx +=1
-        if idx >= 4:
+        if idx >= 8:
             break

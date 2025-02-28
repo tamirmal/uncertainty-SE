@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 import random
+import math
 
 ###############################################################################
 # "the STFT is computed using a 32 ms Hann window with 50% overlap.""
@@ -145,7 +146,6 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
     best_loss = float('inf')
     best_model_path = None
     epochs_no_improve = 0
-    #beta = hyperparms['beta']
     model_type = model.get_type()
 
     #optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0005)
@@ -162,12 +162,13 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
       else:
           assert False, f"Cant find given checkpoint {checkpoint_path}"
 
-    def get_lambda(epoch, decay_rate=0.1):
+    def get_beta(epoch, decay_rate=0.1):
         """Exponential decay from 1 to close to 0"""
-        return max(0.1, torch.exp(-decay_rate * epoch).item())
+        return hyperparms['beta']
+        #return max(0.1, math.exp(-decay_rate * epoch))
 
     for epoch in range(start_epoch, num_epochs):
-        beta = get_lambda(epoch) # make adaptive beta. Lp learns well, but SISDR has issues to start. Lets give it more weight at the start
+        beta = get_beta(epoch) # make adaptive beta. Lp learns well, but SISDR has issues to start. Lets give it more weight at the start
         model.train()
         running_loss = 0.0
         running_sisdr_loss = 0.0
@@ -191,7 +192,11 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
                 if AMAP_stft is not None:
                     AMAP_stft = AMAP_stft.permute(0, 2, 1)
                     AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu, return_complex=False)
-
+                    AMAP_istft = AMAP_istft.unsqueeze(1)
+                    #print(f"AMAP REQ GRAD: {AMAP_istft.requires_grad}")
+                    #print(f"AMAP STFT shape: {AMAP_stft.shape}")
+                    #print(f"AMAP iSTFT shape: {AMAP_istft.shape}")
+                    #print(f"clean shape: {clean.shape}")
                 if logvar is not None:
                     logvar = logvar.permute(0, 2, 1)
 
@@ -208,6 +213,8 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
                     running_loss += loss.item() * noisy.size(0)
                     running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
                     running_lp_loss += Lp_Loss.item() * noisy.size(0)
+
+                    #print(f"sisdr_loss: {sisdr_loss.item()}")
                 elif model_type == 'amap':
                     sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
                     loss = sisdr_loss
@@ -267,23 +274,34 @@ if __name__ == "__main__":
         model_type = sys.argv[1]
         print(f'Training model: {model_type}')
 
+    if torch.cuda.is_available():
+        noisy_dir="/content/datasets_generated/datasets_generated/noisy"
+        clean_dir="/content/datasets_generated/datasets_generated/clean"
+        noise_dir="/content/datasets_generated/datasets_generated/noise"
+    else:
+        noisy_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noisy"
+        clean_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/clean"
+        noise_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noise"
+
     random.seed(7) # for consistency of dataset split
     dataset = SpeechDataset(
-#        noisy_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noisy",
-#        clean_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/clean",
-#        noise_dir="/Users/tamirmal/git/DNS_Challenge/datasets_generated/noise"
-        noisy_dir="/content/datasets_generated/datasets_generated/noisy",
-        clean_dir="/content/datasets_generated/datasets_generated/clean",
-        noise_dir="/content/datasets_generated/datasets_generated/noise"
+        noisy_dir=noisy_dir,
+        clean_dir=clean_dir,
+        noise_dir=noise_dir,
     )
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
+    if torch.cuda.is_available():
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True, num_workers=4)
+        val_loader = DataLoader(val_dataset, batch_size=2, shuffle=False, num_workers=4)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    assert stft_params_cpu == stft_params_gpu # assert equal before moving to device
     stft_params_gpu['window']=stft_params_gpu['window'].to(device)
 
     if model_type == 'baseline_wf':
