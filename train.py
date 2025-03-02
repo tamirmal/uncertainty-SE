@@ -4,7 +4,7 @@ import torch
 import torchaudio
 from torch.utils.data import DataLoader, random_split
 from dataset import SpeechDataset
-from network import EDNet_uncertainty, EDNet_uncertainty_baseline_wf, EDNet_uncertainty_aleatoric_amap, EDNet_uncertainty_epistemic_dropout
+from network import EDNet_uncertainty, EDNet_uncertainty_baseline_wf, EDNet_uncertainty_amap, EDNet_uncertainty_epistemic_dropout, EDNet_uncertainty_wf_logvar
 from auraloss.time import SISDRLoss
 from LpLoss import LpLoss
 from MSELossSpectogram import MSELossSpectrogram
@@ -111,24 +111,26 @@ def evaluate_model(model, dataloader, hyperparms = default_hyp):
 
             clean, clean_stft = clean.to(device), clean_stft.to(device)
 
-            if model_type == 'wf_amap':
+            if model_type in ['aleatoric_amap', 'aleatoric_wf']:
                 sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
                 Lp_Loss = Lp_loss_func(WF_stft, logvar, clean_stft)
                 loss = beta*Lp_Loss + (1.0-beta)*sisdr_loss
-                # loss is avg over batch, so multiply by batch size to get total loss
                 running_loss += loss.item() * noisy.size(0)
                 running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
                 running_lp_loss += Lp_Loss.item() * noisy.size(0)
-            elif model_type == 'amap':
-                sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
-                loss = sisdr_loss
-                # loss is avg over batch, so multiply by batch size to get total loss
-                running_loss += loss.item() * noisy.size(0)
-                running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
             elif model_type in ['baseline_wf', 'mc-dropout']:
                 loss = mse_loss(WF_stft, clean_stft)
-                # loss is avg over batch, so multiply by batch size to get total loss
                 running_loss += loss.item() * noisy.size(0)
+            elif model_type == 'wf_logvar_Lp':
+                Lp_Loss = Lp_loss_func(WF_stft, logvar, clean_stft)
+                loss = Lp_Loss
+                running_lp_loss += Lp_Loss.item() * noisy.size(0)
+                running_loss += loss.item() * noisy.size(0)
+            elif model_type == 'amap_sisdr':
+                sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
+                loss = sisdr_loss
+                running_loss += loss.item() * noisy.size(0)
+                running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
             elif model_type == 'baseline_wf_sisdr':
                 WF_istft = torch.istft(WF_stft, **stft_params_gpu, return_complex=False)
                 sisdr_loss = sisdr_loss_func(WF_istft, clean)
@@ -163,13 +165,8 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
       else:
           assert False, f"Cant find given checkpoint {checkpoint_path}"
 
-    def get_beta(epoch, decay_rate=0.1):
-        """Exponential decay from 1 to close to 0"""
-        return hyperparms['beta']
-        #return max(0.1, math.exp(-decay_rate * epoch))
-
     for epoch in range(start_epoch, num_epochs):
-        beta = get_beta(epoch) # make adaptive beta. Lp learns well, but SISDR has issues to start. Lets give it more weight at the start
+        beta = hyperparms['beta']
         model.train()
         running_loss = 0.0
         running_sisdr_loss = 0.0
@@ -194,10 +191,6 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
                     AMAP_stft = AMAP_stft.permute(0, 2, 1)
                     AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu, return_complex=False)
                     AMAP_istft = AMAP_istft.unsqueeze(1)
-                    #print(f"AMAP REQ GRAD: {AMAP_istft.requires_grad}")
-                    #print(f"AMAP STFT shape: {AMAP_stft.shape}")
-                    #print(f"AMAP iSTFT shape: {AMAP_istft.shape}")
-                    #print(f"clean shape: {clean.shape}")
                 if logvar is not None:
                     logvar = logvar.permute(0, 2, 1)
 
@@ -206,26 +199,26 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
 
                 clean, clean_stft = clean.to(device), clean_stft.to(device)
 
-                if model_type == 'wf_amap':
+                if model_type in ['aleatoric_amap', 'aleatoric_wf']:
                     sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
                     Lp_Loss = Lp_loss_func(WF_stft, logvar, clean_stft)
                     loss = beta*Lp_Loss + (1.0-beta)*sisdr_loss
-                    # loss is avg over batch, so multiply by batch size to get total loss
                     running_loss += loss.item() * noisy.size(0)
                     running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
                     running_lp_loss += Lp_Loss.item() * noisy.size(0)
-
-                    #print(f"sisdr_loss: {sisdr_loss.item()}")
-                elif model_type == 'amap':
-                    sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
-                    loss = sisdr_loss
-                    # loss is avg over batch, so multiply by batch size to get total loss
-                    running_loss += loss.item() * noisy.size(0)
-                    running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
                 elif model_type in ['baseline_wf', 'mc-dropout']:
                     loss = mse_loss(WF_stft, clean_stft)
-                    # loss is avg over batch, so multiply by batch size to get total loss
                     running_loss += loss.item() * noisy.size(0)
+                elif model_type == 'wf_logvar_Lp':
+                    Lp_Loss = Lp_loss_func(WF_stft, logvar, clean_stft)
+                    loss = Lp_Loss
+                    running_lp_loss += Lp_Loss.item() * noisy.size(0)
+                    running_loss += loss.item() * noisy.size(0)
+                elif model_type == 'amap_sisdr':
+                    sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
+                    loss = sisdr_loss
+                    running_loss += loss.item() * noisy.size(0)
+                    running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
                 elif model_type == 'baseline_wf_sisdr':
                     WF_istft = torch.istft(WF_stft, **stft_params_gpu, return_complex=False)
                     sisdr_loss = sisdr_loss_func(WF_istft, clean)
@@ -307,19 +300,23 @@ if __name__ == "__main__":
     #assert stft_params_cpu == stft_params_gpu # assert equal before moving to device
     stft_params_gpu['window']=stft_params_gpu['window'].to(device)
 
-    if model_type == 'baseline_wf':
-        model = EDNet_uncertainty_baseline_wf().to(device)
-    elif model_type == 'baseline_wf_sisdr':
-        model = EDNet_uncertainty_baseline_wf(model_type='baseline_wf_sisdr').to(device)
-    elif model_type == 'amap':
-        model = EDNet_uncertainty_aleatoric_amap().to(device)
-    elif model_type == 'mc-dropout':
+    if model_type in ['aleatoric_amap', 'aleatoric_wf']:
+       # hybrid loss
+        model = EDNet_uncertainty(model_type=model_type).to(device)
+    elif model_type in ['baseline_wf', 'baseline_wf_sisdr']:
+        model = EDNet_uncertainty_baseline_wf(model_type=model_type).to(device)
+    elif model_type=='mc-dropout':
         assert len(sys.argv) >= 3, 'MC Dropout requires the number of MC iterations'
         mc_iterations = int(sys.argv[2])
         print(f"mc-dropout={mc_iterations}")
         model = EDNet_uncertainty_epistemic_dropout(M=mc_iterations).to(device)
-    else:
-        model = EDNet_uncertainty().to(device)
+    elif model_type == 'wf_logvar_Lp':
+        # WF with the Lp loss (defined (7) in the paper)
+        model = EDNet_uncertainty_wf_logvar(model_type=model_type).to(device)
+    elif model_type == 'amap_sisdr':
+        # AMAP with the SISDR loss
+        model = EDNet_uncertainty_amap(model_type='amap_sisdr').to(device)
+
     best_model_path = train_model(model, train_loader, val_loader, num_epochs=100, checkpoint_path=None)
 
     if best_model_path:

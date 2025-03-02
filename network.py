@@ -38,11 +38,12 @@ def convt_insn_lrelu(in_channel, out_channel, kernel_size_in, stride_in, padding
 
 class EDNet_uncertainty(nn.Module):
     def get_type(self):
-        return 'wf_amap'
+        return self.model_type
 
-    def __init__(self, input_channel=1):
+    def __init__(self, input_channel=1, model_type='aleatoric_amap'):
         super(EDNet_uncertainty, self).__init__()
         # processing input: Batch x Input_channel x Time x Frequency
+        self.model_type = model_type
 
         self.conv1 = conv_insn_lrelu(input_channel, 16, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
         self.conv2 = conv_insn_lrelu(16, 32, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
@@ -109,13 +110,14 @@ class EDNet_uncertainty(nn.Module):
 
         return WF_stft, AMAP_stft, logvar
 
-class EDNet_uncertainty_aleatoric_amap(nn.Module):
+class EDNet_uncertainty_amap(nn.Module):
     def get_type(self):
-        return 'amap'
+        return self.model_type
 
-    def __init__(self, input_channel=1):
-        super(EDNet_uncertainty_aleatoric_amap, self).__init__()
+    def __init__(self, input_channel=1,  model_type='amap'):
+        super(EDNet_uncertainty_amap, self).__init__()
         # processing input: Batch x Input_channel x Time x Frequency
+        self.model_type = model_type
 
         self.conv1 = conv_insn_lrelu(input_channel, 16, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
         self.conv2 = conv_insn_lrelu(16, 32, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
@@ -178,6 +180,73 @@ class EDNet_uncertainty_aleatoric_amap(nn.Module):
         AMAP_stft = approximated_map * noisy_complex
 
         return None, AMAP_stft, logvar
+
+
+class EDNet_uncertainty_wf_logvar(nn.Module):
+    def get_type(self):
+        return self.model_type
+
+    def __init__(self, input_channel=1, model_type='wf_logvar'):
+        super(EDNet_uncertainty_wf_logvar, self).__init__()
+        # processing input: Batch x Input_channel x Time x Frequency
+        self.model_type = model_type
+
+        self.conv1 = conv_insn_lrelu(input_channel, 16, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
+        self.conv2 = conv_insn_lrelu(16, 32, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
+        self.conv3 = conv_insn_lrelu(32, 64, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
+        self.conv4 = conv_insn_lrelu(64, 128, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
+        self.conv5 = conv_insn_lrelu(128, 256, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
+        self.conv6 = conv_insn_lrelu(256, 512, kernel_size_in=(5,5), stride_in=(1,2), padding_in=(2,2))
+
+        self.convt6 = convt_insn_lrelu(512, 256, kernel_size_in=(5,5),stride_in=(1,2), padding_in=(2,2))
+        self.convt5 = convt_insn_lrelu(256+256, 128, kernel_size_in=(5,5),stride_in=(1,2), padding_in=(2,2))
+        self.convt4 = convt_insn_lrelu(128+128, 64, kernel_size_in=(5,5),stride_in=(1,2), padding_in=(2,2))
+        self.convt3 = convt_insn_lrelu(64+64, 32, kernel_size_in=(5,5),stride_in=(1,2), padding_in=(2,2))
+        self.convt2 = convt_insn_lrelu(32+32, 16, kernel_size_in=(5,5),stride_in=(1,2), padding_in=(2,2))
+        self.convt1 = convt_insn_lrelu(16+16, 16, kernel_size_in=(5,5),stride_in=(1,2), padding_in=(2,2))
+        self.convt1_mean = conv_insn_lrelu(16, out_channel=1, kernel_size_in=1, stride_in=1, padding_in=0, insn=False, lrelu=False)
+        self.convt1_logvar = conv_insn_lrelu(16, out_channel=1, kernel_size_in=1, stride_in=1, padding_in=0, insn=False, lrelu=False)
+
+    # Tamir - some notes:
+    #   NN (at least here) - uses real numbers, so this network output magnitude
+    #    and then we multiply by noisy_complex to get complex, but what is noisy_complex ?
+    #    is it X or Phase(X)
+    #
+    #  Lets assume that noisy_complex is X (i.e, complex, STFT of input speech)
+    #   and x is magnitude - torch.abs(noisy_complex)
+    #
+    #  This makes sense because the comments below say "Wiener/Approximated_MAP Filtering" - i.e, the actual filtering ...
+    #
+    def forward(self, x, noisy_complex):
+        x = torch.unsqueeze(x, 1) # B, 1, T, F
+        conv1 = self.conv1(x)
+        conv2 = self.conv2(conv1)
+        conv3 = self.conv3(conv2)
+        conv4 = self.conv4(conv3)
+        conv5 = self.conv5(conv4)
+        conv6 = self.conv6(conv5)
+
+        convt6 = self.convt6(conv6)
+        y = torch.cat((convt6, conv5), 1)
+
+        convt5 = self.convt5(y)
+        y = torch.cat((convt5, conv4), 1)
+
+        convt4 = self.convt4(y)
+        y = torch.cat((convt4, conv3), 1)
+
+        convt3 = self.convt3(y)
+        y = torch.cat((convt3, conv2), 1)
+
+        convt2 = self.convt2(y)
+        y = torch.cat((convt2, conv1), 1) # B, C, T, F
+
+        convt1 = self.convt1(y)
+
+        mean = torch.sigmoid(self.convt1_mean(convt1)).squeeze() # B x 1 x T x F -> (B) x T x F
+        logvar = self.convt1_logvar(convt1).squeeze() # B x 1 x T x F  -> (B) x T x F
+
+        return mean, None, logvar
 
 
 class EDNet_uncertainty_baseline_wf(nn.Module):
