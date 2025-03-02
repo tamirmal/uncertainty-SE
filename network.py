@@ -246,7 +246,10 @@ class EDNet_uncertainty_wf_logvar(nn.Module):
         mean = torch.sigmoid(self.convt1_mean(convt1)).squeeze() # B x 1 x T x F -> (B) x T x F
         logvar = self.convt1_logvar(convt1).squeeze() # B x 1 x T x F  -> (B) x T x F
 
-        return mean, None, logvar
+        # Wiener filtering
+        WF_stft = mean * noisy_complex
+
+        return WF_stft, None, logvar
 
 
 class EDNet_uncertainty_baseline_wf(nn.Module):

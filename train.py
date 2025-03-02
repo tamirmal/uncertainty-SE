@@ -125,7 +125,7 @@ def evaluate_model(model, dataloader, hyperparms = default_hyp):
                 Lp_Loss = Lp_loss_func(WF_stft, logvar, clean_stft)
                 loss = Lp_Loss
                 running_lp_loss += Lp_Loss.item() * noisy.size(0)
-                running_loss += loss.item() * noisy.size(0)
+                running_loss = running_lp_loss
             elif model_type == 'amap_sisdr':
                 sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
                 loss = sisdr_loss
@@ -140,9 +140,9 @@ def evaluate_model(model, dataloader, hyperparms = default_hyp):
 
     # avg loss over num of samples
     epoch_loss = running_loss / len(dataloader.dataset)
-    sisdr_loss = running_sisdr_loss / len(dataloader.dataset)
-    Lp_Loss = running_lp_loss / len(dataloader.dataset)
-    return epoch_loss, Lp_Loss, sisdr_loss
+    epoch_sisdr_loss = running_sisdr_loss / len(dataloader.dataset)
+    epoch_Lp_Loss = running_lp_loss / len(dataloader.dataset)
+    return epoch_loss, epoch_Lp_Loss, epoch_sisdr_loss
 
 def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = default_hyp, checkpoint_path='checkpoint.pth'):
     start_epoch = 0
@@ -187,6 +187,12 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
                 x, noisy_complex = x.to(device), noisy_complex.to(device)
                 WF_stft, AMAP_stft, logvar = model(x=x, noisy_complex=noisy_complex)
 
+                #print("\n------")
+                #print(f"WF_stft={WF_stft.shape}")
+                #print(f"logvar={logvar.shape}")
+                #print(f"clean_stft={clean_stft.shape}")
+
+
                 if AMAP_stft is not None:
                     AMAP_stft = AMAP_stft.permute(0, 2, 1)
                     AMAP_istft = torch.istft(AMAP_stft, **stft_params_gpu, return_complex=False)
@@ -210,10 +216,14 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
                     loss = mse_loss(WF_stft, clean_stft)
                     running_loss += loss.item() * noisy.size(0)
                 elif model_type == 'wf_logvar_Lp':
+                    #print(f"WF_stft={WF_stft.shape}")
+                    #print(f"logvar={logvar.shape}")
+                    #print(f"clean_stft={clean_stft.shape}")
+
                     Lp_Loss = Lp_loss_func(WF_stft, logvar, clean_stft)
                     loss = Lp_Loss
                     running_lp_loss += Lp_Loss.item() * noisy.size(0)
-                    running_loss += loss.item() * noisy.size(0)
+                    running_loss = running_lp_loss
                 elif model_type == 'amap_sisdr':
                     sisdr_loss = sisdr_loss_func(AMAP_istft, clean)
                     loss = sisdr_loss
@@ -236,9 +246,9 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
                 torch.cuda.empty_cache()
 
         epoch_loss = running_loss / len(train_loader.dataset)
-        sisdr_loss = running_sisdr_loss / len(train_loader.dataset)
-        Lp_Loss = running_lp_loss / len(train_loader.dataset)
-        print(f'Epoch {epoch}/{num_epochs - 1}, Training Loss: {epoch_loss:.4f}, SISDR Loss: {sisdr_loss:.4f}, Lp Loss: {Lp_Loss:.4f}')
+        epoch_sisdr_loss = running_sisdr_loss / len(train_loader.dataset)
+        epoch_Lp_Loss = running_lp_loss / len(train_loader.dataset)
+        print(f'Epoch {epoch}/{num_epochs - 1}, Training Loss: {epoch_loss:.4f}, SISDR Loss: {epoch_sisdr_loss:.4f}, Lp Loss: {epoch_Lp_Loss:.4f}')
 
         # Evaluate on validation set
         val_loss, val_lp_loss, val_sisdr_loss = evaluate_model(model, val_loader, hyperparms={'beta': beta})
