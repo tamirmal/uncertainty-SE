@@ -8,7 +8,7 @@ class LpLoss(nn.Module):
 
     def forward(self, filtered_output, logvar, clean_speech):
         # Clamp logvar to prevent extreme values
-        logvar_clamped = torch.clamp(logvar, min=-20, max=20)
+        logvar_clamped = torch.clamp(logvar, min=-10, max=10)
 
         # Compute the variance lambda = exp(logvar)
         lambda_ = torch.exp(logvar_clamped)

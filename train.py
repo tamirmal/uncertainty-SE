@@ -118,7 +118,7 @@ def evaluate_model(model, dataloader, hyperparms = default_hyp):
                 running_loss += loss.item() * noisy.size(0)
                 running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
                 running_lp_loss += Lp_Loss.item() * noisy.size(0)
-            elif model_type in ['baseline_wf', 'mc-dropout']:
+            elif model_type in ['baseline_wf', 'mc-dropout'] or 'DE' in model_type:
                 loss = mse_loss(WF_stft, clean_stft)
                 running_loss += loss.item() * noisy.size(0)
             elif model_type == 'wf_logvar_Lp':
@@ -152,7 +152,7 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
     model_type = model.get_type()
 
     #optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0005)
-    optimizer = optim.Adam(model.parameters(), lr=0.005, weight_decay=0.0005)
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0005)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
     sisdr_loss_func = SISDRLoss()
     Lp_loss_func = LpLoss()
@@ -212,7 +212,7 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
                     running_loss += loss.item() * noisy.size(0)
                     running_sisdr_loss += sisdr_loss.item() * noisy.size(0)
                     running_lp_loss += Lp_Loss.item() * noisy.size(0)
-                elif model_type in ['baseline_wf', 'mc-dropout']:
+                elif model_type in ['baseline_wf', 'mc-dropout'] or 'DE' in model_type:
                     loss = mse_loss(WF_stft, clean_stft)
                     running_loss += loss.item() * noisy.size(0)
                 elif model_type == 'wf_logvar_Lp':
@@ -249,10 +249,11 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
         epoch_sisdr_loss = running_sisdr_loss / len(train_loader.dataset)
         epoch_Lp_Loss = running_lp_loss / len(train_loader.dataset)
         print(f'Epoch {epoch}/{num_epochs - 1}, Training Loss: {epoch_loss:.4f}, SISDR Loss: {epoch_sisdr_loss:.4f}, Lp Loss: {epoch_Lp_Loss:.4f}')
-
         # Evaluate on validation set
         val_loss, val_lp_loss, val_sisdr_loss = evaluate_model(model, val_loader, hyperparms={'beta': beta})
         print(f'Epoch {epoch}/{num_epochs - 1}, Validation Loss: {val_loss:.4f}, SISDR Loss: {val_sisdr_loss:.4f}, Lp Loss: {val_lp_loss:.4f}')
+        if (not 'DE' in model_type) or (not 'mc-dropout' in model_type):
+            print(f'Epoch {epoch}/{num_epochs - 1}, logvar mean: {logvar.mean().item():.4f}, logvar min: {logvar.min().item():.4f}, logvar max: {logvar.max().item():.4f}')
 
         # Check if validation loss improved
         scheduler.step(val_loss)
@@ -263,6 +264,9 @@ def train_model(model, train_loader, val_loader, num_epochs=25, hyperparms = def
             drive_path=os.environ['DRIVE_PATH']
             if model_type == 'mc-dropout':
                 best_model_path = f"{drive_path}/{model_type}/{model.get_M()}/best_model_epoch_{epoch}.pth"
+            elif 'DE' in model_type:
+                M=model_type.split('-')[1]
+                best_model_path = f"{drive_path}/DE/{M}/best_model_epoch_{epoch}.pth"
             else:
                 best_model_path = f"{drive_path}/{model_type}/best_model_epoch_{epoch}.pth"
             save_checkpoint(model, optimizer, epoch + 1, val_loss, best_model_path)
@@ -320,6 +324,9 @@ if __name__ == "__main__":
         mc_iterations = int(sys.argv[2])
         print(f"mc-dropout={mc_iterations}")
         model = EDNet_uncertainty_epistemic_dropout(M=mc_iterations).to(device)
+    elif 'DE' in model_type: # Deep Ensemble
+        M=model_type.split('-')[1]
+        model = EDNet_uncertainty_baseline_wf(model_type=model_type).to(device)
     elif model_type == 'wf_logvar_Lp':
         # WF with the Lp loss (defined (7) in the paper)
         model = EDNet_uncertainty_wf_logvar(model_type=model_type).to(device)
@@ -327,7 +334,7 @@ if __name__ == "__main__":
         # AMAP with the SISDR loss
         model = EDNet_uncertainty_amap(model_type='amap_sisdr').to(device)
 
-    best_model_path = train_model(model, train_loader, val_loader, num_epochs=100, checkpoint_path=None)
+    best_model_path = train_model(model, train_loader, val_loader, num_epochs=50, checkpoint_path=None)
 
     if best_model_path:
         print(f'Best model saved at: {best_model_path}')

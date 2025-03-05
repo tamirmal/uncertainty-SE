@@ -249,7 +249,7 @@ class EDNet_uncertainty_wf_logvar(nn.Module):
         # Wiener filtering
         WF_stft = mean * noisy_complex
 
-        return WF_stft, None, logvar
+        return mean, None, logvar
 
 
 class EDNet_uncertainty_baseline_wf(nn.Module):
